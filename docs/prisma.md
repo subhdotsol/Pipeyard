@@ -194,36 +194,161 @@ An operation failed because it depends on records that were not found
 
 ---
 
-## Monorepo Setup
+## Monorepo Setup (Prisma 7)
 
-When using Prisma in a Turborepo package:
+> [!IMPORTANT]
+> Prisma 7 has breaking changes. The `url` property is no longer supported in `schema.prisma` - use `prisma.config.ts` instead.
+
+### Directory Structure
 
 ```
-packages/database/
+packages/db/
 ├── prisma/
-│   └── schema.prisma
-├── src/
-│   └── index.ts      # Export client
-├── package.json
-└── tsconfig.json
+│   └── schema.prisma      # Models only, no url
+├── generated/
+│   └── prisma/            # Auto-generated client
+├── prisma.config.ts       # Database URL config
+├── index.ts               # Singleton client export
+└── package.json
 ```
+
+---
+
+### prisma.config.ts
 
 ```ts
-// packages/database/src/index.ts
-import { PrismaClient } from "@prisma/client";
+import "dotenv/config";
+import { defineConfig } from "prisma/config";
 
-export const prisma = new PrismaClient();
-export * from "@prisma/client";
+export default defineConfig({
+  schema: "prisma/schema.prisma",
+  migrations: {
+    path: "prisma/migrations",
+  },
+  datasource: {
+    url: process.env["DATABASE_URL"],
+  },
+});
 ```
 
+---
+
+### schema.prisma
+
+```prisma
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  // No url here in Prisma 7!
+}
+
+model Job {
+  id        String    @id @default(uuid())
+  tenantId  String
+  type      String
+  payload   Json
+  status    JobStatus @default(PENDING)
+  // ... other fields
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+```
+
+---
+
+### index.ts (Singleton Pattern)
+
+```ts
+import { PrismaClient } from "./generated/prisma";
+
+// Prevent multiple instances in development (hot reload)
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
+
+export const prisma = globalForPrisma.prisma ?? new PrismaClient();
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
+
+// Re-export types for consumers
+export * from "./generated/prisma";
+```
+
+---
+
+### package.json
+
 ```json
-// packages/database/package.json
 {
-  "name": "@repo/database",
+  "name": "@repo/db",
+  "private": true,
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    }
+  },
   "scripts": {
-    "generate": "prisma generate",
-    "migrate": "prisma migrate dev",
-    "studio": "prisma studio"
+    "generate": "bunx prisma generate",
+    "migrate": "bunx prisma migrate dev",
+    "studio": "bunx prisma studio"
+  },
+  "dependencies": {
+    "@prisma/client": "^7.2.0",
+    "prisma": "^7.2.0"
   }
 }
 ```
+
+---
+
+### Using in Other Packages
+
+```json
+// apps/backend/package.json
+{
+  "dependencies": {
+    "@repo/db": "*"
+  }
+}
+```
+
+```ts
+// apps/backend/index.ts
+import { prisma, Job, JobStatus } from "@repo/db";
+
+// Use the client
+const jobs = await prisma.job.findMany({
+  where: { status: JobStatus.PENDING },
+});
+
+// Types are available
+function processJob(job: Job) {
+  console.log(job.id, job.status);
+}
+```
+
+---
+
+### Commands
+
+```bash
+# From packages/db directory:
+bunx prisma generate     # Generate client after schema changes
+bunx prisma migrate dev  # Create and apply migrations
+bunx prisma studio       # Open database GUI
+```
+
