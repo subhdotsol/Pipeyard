@@ -792,3 +792,134 @@ cd apps/web && bun run dev
 ```
 
 Open http://localhost:3001 and create a job - watch it update in real-time!
+
+---
+
+## How It All Works (Complete Flow)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           USER CREATES A JOB                            │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. FRONTEND (localhost:3001)                                            │
+│    - User clicks "Create Job"                                           │
+│    - Sends POST /jobs to API                                            │
+│    - WebSocket connected, subscribed to tenant                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. API SERVER (localhost:3000)                                          │
+│    - Validates request with Zod                                         │
+│    - Saves job to PostgreSQL (status: PENDING)                          │
+│    - Pushes job ID to Redis queue (LPUSH job_queue)                     │
+│    - Returns { jobId } to frontend                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. REDIS QUEUE                                                          │
+│    - Job ID sitting in LIST                                             │
+│    - Data structure: [job-id-3, job-id-2, job-id-1]                     │
+│    - FIFO: First in, first out                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. WORKER (background process)                                          │
+│    - Polls Redis with BRPOP (blocking pop)                              │
+│    - Pops job ID from queue                                             │
+│    - Fetches job details from PostgreSQL                                │
+│    - Updates status to RUNNING, increments attempts                     │
+│    - Publishes RUNNING status to Redis Pub/Sub                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 5. JOB PROCESSING                                                       │
+│    - Worker runs the job handler (email, webhook, sleep, etc.)          │
+│    - On SUCCESS: Update status to COMPLETED                             │
+│    - On FAILURE: Retry up to 3 times, then mark FAILED                  │
+│    - Publishes final status to Redis Pub/Sub                            │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 6. REDIS PUB/SUB                                                        │
+│    - Channel: job_updates                                               │
+│    - Message: { tenantId, jobId, status, error }                        │
+│    - API is subscribed to this channel                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 7. API → WEBSOCKET                                                      │
+│    - API receives Pub/Sub message                                       │
+│    - Finds all WebSocket clients subscribed to that tenantId            │
+│    - Broadcasts JOB_UPDATE to each client                               │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 8. FRONTEND RECEIVES UPDATE                                             │
+│    - WebSocket receives JOB_UPDATE                                      │
+│    - Updates job status in UI instantly                                 │
+│    - Auto-refreshes job list when COMPLETED/FAILED                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Startup Scripts
+
+### start.sh - Start Everything
+
+```bash
+./start.sh
+```
+
+This script:
+1. Starts PostgreSQL + Redis via Docker
+2. Starts API server (port 3000)
+3. Starts Worker (background processor)
+4. Starts Frontend (port 3001)
+5. Handles Ctrl+C to stop everything cleanly
+
+### stop.sh - Stop Everything
+
+```bash
+./stop.sh
+```
+
+---
+
+## Data Management
+
+### Reset Database (Delete All Jobs)
+
+```bash
+./stop.sh
+docker compose down -v    # -v removes volumes (data)
+./start.sh
+cd packages/db
+bunx prisma migrate dev --name init
+```
+
+### View Database UI
+
+```bash
+cd packages/db
+bunx prisma studio
+# Opens at http://localhost:5555
+```
+
+### View Redis Queue
+
+```bash
+docker compose exec redis redis-cli
+LRANGE job_queue 0 -1    # See all queued jobs
+LLEN job_queue           # Queue length
+```

@@ -58,6 +58,10 @@ export default function Dashboard() {
                         : job
                 )
             );
+            // Auto-refresh when job completes or fails
+            if (latestUpdate.status === "COMPLETED" || latestUpdate.status === "FAILED") {
+                fetchJobs();
+            }
         }
     }, [updates]);
 
@@ -104,8 +108,8 @@ export default function Dashboard() {
     }
 
     return (
-        <div className="min-h-screen bg-zinc-950 text-zinc-100 p-8">
-            <div className="max-w-4xl mx-auto space-y-8">
+        <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6">
+            <div className="max-w-7xl mx-auto space-y-6">
                 {/* Header */}
                 <div className="flex items-center justify-between">
                     <div>
@@ -151,72 +155,75 @@ export default function Dashboard() {
                     </CardContent>
                 </Card>
 
-                {/* Job List */}
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader className="flex flex-row items-center justify-between">
-                        <div>
-                            <CardTitle>Jobs ({jobs.length})</CardTitle>
-                            <CardDescription>All jobs for {TENANT_ID}</CardDescription>
-                        </div>
-                        <Button variant="outline" size="sm" onClick={fetchJobs} className="border-zinc-700">
-                            🔄 Refresh
-                        </Button>
-                    </CardHeader>
-                    <CardContent>
-                        {loading ? (
-                            <p className="text-zinc-500 text-center py-8">Loading...</p>
-                        ) : jobs.length === 0 ? (
-                            <p className="text-zinc-500 text-center py-8">No jobs yet. Create one above!</p>
-                        ) : (
-                            <div className="space-y-3">
-                                {jobs.map((job) => (
-                                    <div
-                                        key={job.id}
-                                        className="flex items-center justify-between p-4 rounded-lg bg-zinc-800/50 border border-zinc-700/50"
-                                    >
-                                        <div className="space-y-1">
-                                            <div className="flex items-center gap-3">
-                                                <span className="font-medium capitalize">{job.type}</span>
-                                                <Badge className={statusVariants[job.status]}>{job.status}</Badge>
-                                            </div>
-                                            <div className="text-sm text-zinc-500 font-mono">
-                                                {job.id.slice(0, 8)}... • Attempts: {job.attempts}
-                                            </div>
-                                            {job.error && (
-                                                <div className="text-sm text-red-400">{job.error}</div>
-                                            )}
-                                        </div>
-                                        <div className="text-sm text-zinc-500">
-                                            {new Date(job.createdAt).toLocaleTimeString()}
-                                        </div>
-                                    </div>
-                                ))}
+                {/* Side-by-side: Jobs + Updates */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Job List */}
+                    <Card className="bg-zinc-900 border-zinc-800">
+                        <CardHeader className="flex flex-row items-center justify-between">
+                            <div>
+                                <CardTitle>Jobs ({jobs.length})</CardTitle>
+                                <CardDescription>All jobs for {TENANT_ID}</CardDescription>
                             </div>
-                        )}
-                    </CardContent>
-                </Card>
+                            <Button variant="outline" size="sm" onClick={fetchJobs} className="border-zinc-700">
+                                🔄 Refresh
+                            </Button>
+                        </CardHeader>
+                        <CardContent>
+                            {loading ? (
+                                <p className="text-zinc-500 text-center py-8">Loading...</p>
+                            ) : jobs.length === 0 ? (
+                                <p className="text-zinc-500 text-center py-8">No jobs yet. Create one above!</p>
+                            ) : (
+                                <div className="space-y-3">
+                                    {jobs.map((job) => (
+                                        <div
+                                            key={job.id}
+                                            className="flex items-center justify-between p-4 rounded-lg bg-zinc-800/50 border border-zinc-700/50"
+                                        >
+                                            <div className="space-y-1">
+                                                <div className="flex items-center gap-3">
+                                                    <span className="font-medium capitalize">{job.type}</span>
+                                                    <Badge className={statusVariants[job.status]}>{job.status}</Badge>
+                                                </div>
+                                                <div className="text-sm text-zinc-500 font-mono">
+                                                    {job.id.slice(0, 8)}... • Attempts: {job.attempts}
+                                                </div>
+                                                {job.error && (
+                                                    <div className="text-sm text-red-400">{job.error}</div>
+                                                )}
+                                            </div>
+                                            <div className="text-sm text-zinc-500">
+                                                {new Date(job.createdAt).toLocaleTimeString()}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
 
-                {/* Real-time Updates */}
-                <Card className="bg-zinc-900 border-zinc-800">
-                    <CardHeader>
-                        <CardTitle>Real-time Updates</CardTitle>
-                        <CardDescription>Live status changes from WebSocket</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        {updates.length === 0 ? (
-                            <p className="text-zinc-500 text-center py-4">Waiting for updates...</p>
-                        ) : (
-                            <div className="space-y-2 max-h-48 overflow-y-auto">
-                                {updates.slice(0, 10).map((update, i) => (
-                                    <div key={i} className="flex items-center gap-3 text-sm">
-                                        <Badge className={statusVariants[update.status]}>{update.status}</Badge>
-                                        <span className="font-mono text-zinc-400">{update.jobId.slice(0, 8)}...</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </CardContent>
-                </Card>
+                    {/* Real-time Updates */}
+                    <Card className="bg-zinc-900 border-zinc-800">
+                        <CardHeader>
+                            <CardTitle>Real-time Updates</CardTitle>
+                            <CardDescription>Live status changes from WebSocket</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            {updates.length === 0 ? (
+                                <p className="text-zinc-500 text-center py-4">Waiting for updates...</p>
+                            ) : (
+                                <div className="space-y-2 max-h-48 overflow-y-auto">
+                                    {updates.slice(0, 10).map((update, i) => (
+                                        <div key={i} className="flex items-center gap-3 text-sm">
+                                            <Badge className={statusVariants[update.status]}>{update.status}</Badge>
+                                            <span className="font-mono text-zinc-400">{update.jobId.slice(0, 8)}...</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </div>
             </div>
         </div>
     );
