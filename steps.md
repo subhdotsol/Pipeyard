@@ -634,7 +634,8 @@ PUBLISH job_updates '{"tenantId":"t1","jobId":"j1","status":"COMPLETED"}'
 | `bunx prisma generate` | Regenerate Prisma client |
 | `bunx prisma migrate dev` | Create/apply migrations |
 | `bunx prisma studio` | Open database GUI |
-| `bun run index.ts` | Start backend server |
+| `cd apps/backend && bun run index.ts` | Start backend server |
+| `cd apps/worker && bun run index.ts` | Start worker |
 
 ---
 
@@ -643,8 +644,11 @@ PUBLISH job_updates '{"tenantId":"t1","jobId":"j1","status":"COMPLETED"}'
 ```
 async-backend/
 ├── apps/
-│   └── backend/
-│       └── index.ts          # Express + WebSocket server
+│   ├── backend/
+│   │   └── index.ts          # Express + WebSocket server
+│   └── worker/
+│       ├── index.ts          # Worker main loop
+│       └── processor.ts      # Job handlers
 ├── packages/
 │   ├── db/
 │   │   ├── index.ts          # Prisma singleton
@@ -663,6 +667,8 @@ async-backend/
     ├── prisma.md
     ├── docker.md
     ├── redis.md
+    ├── worker.md
     ├── websocket.md
     └── api-test.md
 ```
+
