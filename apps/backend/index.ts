@@ -140,19 +140,28 @@ app.post("/jobs", async (req, res) => {
 
   const { tenantId, type, payload } = result.data;
 
-  const job = await prisma.job.create({
-    data: {
-      tenantId,
-      type,
-      payload: payload as Prisma.InputJsonValue,
-      status: JobStatus.PENDING,
-    },
-  });
+  try {
+    const job = await prisma.job.create({
+      data: {
+        tenantId,
+        type,
+        payload: payload as Prisma.InputJsonValue,
+        status: JobStatus.PENDING,
+      },
+    });
 
-  // TODO: Push to Redis queue here
-  // await redis.lpush("job_queue", job.id);
+    // TODO: Push to Redis queue here
+    // await redis.lpush("job_queue", job.id);
 
-  res.status(201).json({ jobId: job.id });
+    res.status(201).json({ jobId: job.id });
+  } catch (error) {
+    console.error("[Prisma Error]", error);
+    res.status(500).json({
+      error: "Database error",
+      message: error instanceof Error ? error.message : "Unknown error",
+      cause: error instanceof Error && "cause" in error ? String(error.cause) : undefined,
+    });
+  }
 });
 
 /**
