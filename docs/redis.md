@@ -1,161 +1,242 @@
 # Redis Reference
 
-## CLI Commands
+## Quick Start
 
 ```bash
-# Connect to Redis CLI
-redis-cli
+# Start Redis
+docker compose up -d redis
 
-# In Docker
-docker compose exec redis redis-cli
+# Check Redis is running
+docker compose exec redis redis-cli ping
+# → PONG
+
+# Stop Redis
+docker compose stop redis
+```
+
+---
+
+## Docker Setup
+
+**docker-compose.yml:**
+```yaml
+redis:
+  image: redis:7-alpine
+  container_name: async-backend-redis
+  ports:
+    - "6379:6379"
+  volumes:
+    - redis_data:/data
+  command: redis-server --appendonly yes
+```
+
+**Environment Variable:**
+```env
+REDIS_URL="redis://localhost:6379"
+```
+
+---
+
+## @repo/redis Package
+
+### Installation
+
+```bash
+cd packages/redis
+bun add ioredis
+```
+
+### Usage
+
+```ts
+import { 
+  getRedisClient,
+  pushJob, 
+  popJob,
+  publishJobUpdate,
+  createPubSub
+} from "@repo/redis";
+
+const redis = getRedisClient();
 ```
 
 ---
 
 ## Queue Operations (LIST)
 
-```bash
-# Push to queue (right side)
-RPUSH job_queue "job-id-1"
-RPUSH job_queue "job-id-2" "job-id-3"
+Redis LIST provides a FIFO queue using LPUSH + RPOP.
 
-# Pop from queue (left side) - FIFO
-LPOP job_queue
-
-# Pop multiple (Redis 6.2+)
-LPOP job_queue 5
-
-# View queue without removing
-LRANGE job_queue 0 -1    # all items
-LRANGE job_queue 0 9     # first 10
-
-# Queue length
-LLEN job_queue
-
-# Clear queue
-DEL job_queue
-```
-
----
-
-## Pub/Sub
-
-```bash
-# Subscribe to channel
-SUBSCRIBE job_updates
-
-# Publish message
-PUBLISH job_updates '{"jobId":"abc","status":"COMPLETED"}'
-
-# Subscribe to pattern
-PSUBSCRIBE job_*
-```
-
----
-
-## Bun/Node Redis Client
-
-```bash
-bun add ioredis
-```
+### Push Jobs
 
 ```ts
-import Redis from "ioredis";
+import { getRedisClient, pushJob, pushJobs } from "@repo/redis";
 
-// Connection
-const redis = new Redis(process.env.REDIS_URL);
+const redis = getRedisClient();
 
-// Queue - Push
-await redis.rpush("job_queue", jobId);
+// Push single job
+await pushJob(redis, "job-uuid-1");
 
-// Queue - Pop batch
-const jobs = await redis.lpop("job_queue", 5);
+// Push multiple jobs
+await pushJobs(redis, ["job-uuid-2", "job-uuid-3"]);
+```
 
-// Pub/Sub - Publisher
-await redis.publish("job_updates", JSON.stringify({ jobId, status }));
+### Pop Jobs
 
-// Pub/Sub - Subscriber (separate connection!)
-const sub = new Redis(process.env.REDIS_URL);
-sub.subscribe("job_updates");
-sub.on("message", (channel, message) => {
-  const data = JSON.parse(message);
-  console.log(data);
+```ts
+import { popJob, popJobs } from "@repo/redis";
+
+// Blocking pop - waits up to 5 seconds
+const jobId = await popJob(redis, 5);
+
+// Batch pop - get up to 10 jobs immediately
+const jobIds = await popJobs(redis, 10);
+```
+
+### Queue Management
+
+```ts
+import { getQueueLength, clearQueue } from "@repo/redis";
+
+// Check queue length
+const length = await getQueueLength(redis);
+console.log(`${length} jobs in queue`);
+
+// Clear queue (careful!)
+await clearQueue(redis);
+```
+
+---
+
+## Pub/Sub (Real-time Updates)
+
+### Publish Updates
+
+```ts
+import { getRedisClient, publishJobUpdate } from "@repo/redis";
+
+const redis = getRedisClient();
+
+// Worker publishes status update
+await publishJobUpdate(redis, {
+  tenantId: "tenant-1",
+  jobId: "job-uuid",
+  status: "COMPLETED",
+  error: null,
 });
 ```
 
+### Subscribe to Updates
+
+```ts
+import { subscribeToJobUpdates } from "@repo/redis";
+
+// Subscribe (creates dedicated connection)
+const unsubscribe = subscribeToJobUpdates(
+  "redis://localhost:6379",
+  (message) => {
+    console.log(`Job ${message.jobId}: ${message.status}`);
+    // Broadcast to WebSocket clients
+    broadcastJobUpdate(message.tenantId, message.jobId, message.status);
+  }
+);
+
+// Later: cleanup
+unsubscribe();
+```
+
+### PubSub Helper
+
+```ts
+import { createPubSub } from "@repo/redis";
+
+const pubsub = createPubSub("redis://localhost:6379");
+
+// Publish
+await pubsub.publish({
+  tenantId: "tenant-1",
+  jobId: "job-uuid",
+  status: "RUNNING",
+});
+
+// Subscribe
+const unsubscribe = pubsub.subscribe((msg) => {
+  console.log(msg);
+});
+
+// Cleanup
+pubsub.close();
+```
+
 ---
 
-## Common Errors & Fixes
+## Redis CLI Commands
 
-### Connection refused
+```bash
+# Connect to Redis CLI
+docker compose exec redis redis-cli
+
+# Queue operations
+LLEN job_queue              # Queue length
+LRANGE job_queue 0 -1       # View all jobs in queue
+LPUSH job_queue "job-id"    # Add job
+RPOP job_queue              # Remove job
+
+# Pub/Sub testing
+SUBSCRIBE job_updates       # Listen for updates
+PUBLISH job_updates '{"tenantId":"t1","jobId":"j1","status":"COMPLETED"}'
+
+# Clear queue
+DEL job_queue
+
+# View all keys
+KEYS *
+```
+
+---
+
+## Architecture
 
 ```
-Error: connect ECONNREFUSED 127.0.0.1:6379
+┌─────────────┐     LPUSH      ┌─────────────┐     RPOP       ┌─────────────┐
+│   API       │ ──────────────▶│   REDIS     │◀───────────────│   WORKER    │
+│  (Producer) │                │   LIST      │                │  (Consumer) │
+└─────────────┘                └─────────────┘                └──────┬──────┘
+                                                                     │
+                                     ┌───────────────────────────────┘
+                                     │ PUBLISH
+                                     ▼
+                               ┌─────────────┐     SUBSCRIBE   ┌─────────────┐
+                               │   REDIS     │ ───────────────▶│   API       │
+                               │   PUB/SUB   │                 │ (WebSocket) │
+                               └─────────────┘                 └─────────────┘
+```
+
+**Flow:**
+1. API creates job in Postgres, pushes job ID to Redis queue
+2. Worker pops job IDs, processes jobs
+3. Worker publishes status updates to Redis Pub/Sub
+4. API subscribes, broadcasts to WebSocket clients
+
+---
+
+## Common Errors
+
+### Connection Refused
+
+```
+ECONNREFUSED 127.0.0.1:6379
 ```
 
 **Fix:**
 ```bash
-# Check if Redis is running
-docker compose ps redis
-
-# In Docker, use service name
-REDIS_URL=redis://redis:6379
+docker compose up -d redis
+docker compose ps  # verify it's running
 ```
 
----
-
-### WRONGTYPE Operation against a key
+### Pub/Sub in Same Connection
 
 ```
-WRONGTYPE Operation against a key holding the wrong kind of value
+ERR only SUBSCRIBE/UNSUBSCRIBE/PING/QUIT allowed in SUBSCRIBE mode
 ```
 
-**Fix:** Key exists as different type. Delete it:
-```bash
-DEL job_queue
-```
-
----
-
-### Pub/Sub on same connection as commands
-
-```ts
-// ❌ Wrong - can't use same connection for pub/sub AND commands
-const redis = new Redis();
-redis.subscribe("channel");
-await redis.get("key");  // ERROR!
-
-// ✅ Correct - separate connections
-const redis = new Redis();     // for commands
-const sub = new Redis();       // for subscriptions
-```
-
----
-
-### Memory issues
-
-```bash
-# Check memory usage
-redis-cli INFO memory
-
-# Flush all data (careful!)
-redis-cli FLUSHALL
-```
-
----
-
-## Debugging
-
-```bash
-# Monitor all commands in real-time
-redis-cli MONITOR
-
-# Check all keys
-redis-cli KEYS "*"
-
-# Key type
-redis-cli TYPE job_queue
-
-# TTL
-redis-cli TTL some_key
-```
+**Fix:** Pub/Sub requires a dedicated connection. Use `subscribeToJobUpdates()` which creates its own connection.
