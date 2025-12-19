@@ -713,3 +713,82 @@ async-backend/
     └── api-test.md
 ```
 
+---
+
+## Phase 7: Frontend Dashboard
+
+### 7.1 Create WebSocket Hook
+
+**`apps/web/app/hooks/useJobUpdates.ts`:**
+```ts
+"use client";
+import { useEffect, useState, useCallback } from "react";
+
+export interface JobUpdate {
+  type: "JOB_UPDATE";
+  jobId: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+  error: string | null;
+}
+
+export function useJobUpdates(tenantId: string) {
+  const [updates, setUpdates] = useState<JobUpdate[]>([]);
+  const [isConnected, setIsConnected] = useState(false);
+
+  useEffect(() => {
+    const ws = new WebSocket("ws://localhost:3000/ws");
+
+    ws.onopen = () => {
+      setIsConnected(true);
+      ws.send(JSON.stringify({ type: "SUBSCRIBE", tenantId }));
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === "JOB_UPDATE") {
+        setUpdates((prev) => [data, ...prev]);
+      }
+    };
+
+    ws.onclose = () => setIsConnected(false);
+
+    return () => ws.close();
+  }, [tenantId]);
+
+  return { updates, isConnected, clearUpdates: () => setUpdates([]) };
+}
+```
+
+### 7.2 Dashboard Component
+
+**`apps/web/app/components/Dashboard.tsx`:**
+- Job list with status badges (PENDING, RUNNING, COMPLETED, FAILED)
+- Create job form (sleep, email, webhook)
+- Real-time updates log from WebSocket
+- Connection status indicator
+
+### 7.3 Start Frontend
+
+```bash
+cd apps/web
+bun run dev
+# → http://localhost:3001
+```
+
+### 7.4 Full Stack Test
+
+```bash
+# Terminal 1: Database + Redis
+docker compose up -d
+
+# Terminal 2: API Server
+cd apps/backend && bun run index.ts
+
+# Terminal 3: Worker
+cd apps/worker && bun run index.ts
+
+# Terminal 4: Frontend
+cd apps/web && bun run dev
+```
+
+Open http://localhost:3001 and create a job - watch it update in real-time!
