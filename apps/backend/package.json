@@ -4,12 +4,22 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/ws": "^8.18.1"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "@repo/db": "*"
+    "@prisma/client": "^7.2.0",
+    "@repo/db": "*",
+    "@repo/types": "*",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "ws": "^8.18.3"
   }
 }
