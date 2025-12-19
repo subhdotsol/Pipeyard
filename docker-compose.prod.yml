@@ -1,0 +1,96 @@
+# Docker Compose for Full Stack Production
+# Usage: docker compose -f docker-compose.prod.yml up --build
+
+services:
+  # =================================
+  # Database
+  # =================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: pipeyard-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: jobs
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # =================================
+  # Redis
+  # =================================
+  redis:
+    image: redis:7-alpine
+    container_name: pipeyard-redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # =================================
+  # API Server (can scale)
+  # =================================
+  api:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jobs
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+  # =================================
+  # Worker (can scale)
+  # =================================
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jobs
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+
+  # =================================
+  # NGINX Load Balancer
+  # =================================
+  nginx:
+    image: nginx:alpine
+    container_name: pipeyard-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

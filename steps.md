@@ -923,3 +923,181 @@ docker compose exec redis redis-cli
 LRANGE job_queue 0 -1    # See all queued jobs
 LLEN job_queue           # Queue length
 ```
+
+---
+
+## Phase 8: Docker Production Setup
+
+### 8.1 Create Dockerfiles
+
+**`apps/backend/Dockerfile`:**
+```dockerfile
+FROM oven/bun:1-alpine
+WORKDIR /app
+
+COPY package.json bun.lock* ./
+COPY packages/db/package.json ./packages/db/
+COPY packages/redis/package.json ./packages/redis/
+COPY packages/types/package.json ./packages/types/
+COPY apps/backend/package.json ./apps/backend/
+
+RUN bun install --frozen-lockfile
+
+COPY packages/db ./packages/db
+COPY packages/redis ./packages/redis
+COPY packages/types ./packages/types
+COPY apps/backend ./apps/backend
+
+RUN cd packages/db && bunx prisma generate
+
+EXPOSE 3000
+CMD ["bun", "run", "apps/backend/index.ts"]
+```
+
+**`apps/worker/Dockerfile`:** (similar, points to worker)
+
+### 8.2 NGINX Load Balancer
+
+**`nginx/nginx.conf`:**
+```nginx
+upstream api_servers {
+    server api:3000;
+}
+
+server {
+    listen 80;
+
+    location /ws {
+        proxy_pass http://api_servers;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    location / {
+        proxy_pass http://api_servers;
+    }
+}
+```
+
+### 8.3 Production Docker Compose
+
+**`docker-compose.prod.yml`:**
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: jobs
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jobs
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    deploy:
+      replicas: 2  # Scale API servers
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/jobs
+      - REDIS_URL=redis://redis:6379
+    deploy:
+      replicas: 3  # Scale workers
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:
+```
+
+### 8.4 Running Production
+
+```bash
+# Build and start
+docker compose -f docker-compose.prod.yml up --build
+
+# Run in background
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Stop
+docker compose -f docker-compose.prod.yml down
+```
+
+### 8.5 Horizontal Scaling
+
+```bash
+# Scale workers to 5
+docker compose -f docker-compose.prod.yml up -d --scale worker=5
+
+# Scale API to 4
+docker compose -f docker-compose.prod.yml up -d --scale api=4
+
+# View running containers
+docker compose -f docker-compose.prod.yml ps
+```
+
+### 8.6 Test Scaling
+
+```bash
+# Create 10 jobs at once
+for i in {1..10}; do
+  curl -X POST http://localhost:8080/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"tenantId":"tenant-1","type":"sleep","payload":{"delayMs":5000}}'
+done
+
+# Watch workers process in parallel
+docker compose -f docker-compose.prod.yml logs -f worker
+```
+
+---
+
+## 🎉 Project Complete!
+
+You've built a production-ready job queue system with:
+
+- ✅ **Turborepo** monorepo structure
+- ✅ **Prisma 7** with PostgreSQL
+- ✅ **Express** API with Zod validation
+- ✅ **Redis** queue with Pub/Sub
+- ✅ **Worker** with retry logic
+- ✅ **WebSocket** real-time updates
+- ✅ **Next.js** dashboard with shadcn/ui
+- ✅ **Docker** with horizontal scaling
+- ✅ **NGINX** load balancer
+
+### Access Points
+
+| Environment | API | WebSocket | Frontend |
+|-------------|-----|-----------|----------|
+| Local Dev | http://localhost:3000 | ws://localhost:3000/ws | http://localhost:3001 |
+| Docker Prod | http://localhost:8080 | ws://localhost:8080/ws | - |
