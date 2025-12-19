@@ -288,6 +288,153 @@ bun run index.ts
 
 ---
 
+## Phase 4: Redis Queue
+
+### 4.1 Add Redis to docker-compose.yml
+
+```yaml
+services:
+  postgres:
+    # ... existing postgres config
+
+  redis:
+    image: redis:7-alpine
+    container_name: async-backend-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+volumes:
+  postgres_data:
+  redis_data:
+```
+
+```bash
+# Start Redis
+docker compose up -d redis
+
+# Verify it's running
+docker compose exec redis redis-cli ping
+# → PONG
+```
+
+### 4.2 Create Redis Package
+
+```bash
+mkdir -p packages/redis
+cd packages/redis
+bun init -y
+bun add ioredis
+```
+
+**Create `package.json`:**
+```json
+{
+  "name": "@repo/redis",
+  "main": "./index.ts",
+  "exports": { ".": { "types": "./index.ts", "default": "./index.ts" } },
+  "dependencies": { "ioredis": "^5.8.2" }
+}
+```
+
+### 4.3 Queue Operations (queue.ts)
+
+```ts
+import type { Redis } from "ioredis";
+
+const JOB_QUEUE_KEY = "job_queue";
+
+// Push job to queue
+export async function pushJob(redis: Redis, jobId: string): Promise<number> {
+  return redis.lpush(JOB_QUEUE_KEY, jobId);
+}
+
+// Pop job (blocking, waits up to timeout seconds)
+export async function popJob(redis: Redis, timeout: number = 5): Promise<string | null> {
+  const result = await redis.brpop(JOB_QUEUE_KEY, timeout);
+  return result ? result[1] : null;
+}
+
+// Pop multiple jobs (non-blocking)
+export async function popJobs(redis: Redis, count: number): Promise<string[]> {
+  const pipeline = redis.pipeline();
+  for (let i = 0; i < count; i++) {
+    pipeline.rpop(JOB_QUEUE_KEY);
+  }
+  const results = await pipeline.exec();
+  return results?.map(([_, v]) => v).filter((v): v is string => v !== null) ?? [];
+}
+
+// Queue length
+export async function getQueueLength(redis: Redis): Promise<number> {
+  return redis.llen(JOB_QUEUE_KEY);
+}
+```
+
+### 4.4 Pub/Sub Operations (pubsub.ts)
+
+```ts
+import Redis from "ioredis";
+
+const JOB_UPDATES_CHANNEL = "job_updates";
+
+export interface JobUpdateMessage {
+  tenantId: string;
+  jobId: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+  error?: string | null;
+}
+
+// Publish job status update
+export async function publishJobUpdate(redis: Redis, message: JobUpdateMessage): Promise<number> {
+  return redis.publish(JOB_UPDATES_CHANNEL, JSON.stringify(message));
+}
+
+// Subscribe to job updates (creates dedicated connection)
+export function subscribeToJobUpdates(
+  redisUrl: string,
+  handler: (message: JobUpdateMessage) => void
+): () => void {
+  const subscriber = new Redis(redisUrl);
+
+  subscriber.subscribe(JOB_UPDATES_CHANNEL);
+  subscriber.on("message", (channel, message) => {
+    if (channel === JOB_UPDATES_CHANNEL) {
+      handler(JSON.parse(message));
+    }
+  });
+
+  return () => {
+    subscriber.unsubscribe(JOB_UPDATES_CHANNEL);
+    subscriber.quit();
+  };
+}
+```
+
+### 4.5 Main Export (index.ts)
+
+```ts
+import Redis from "ioredis";
+
+const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+let redisClient: Redis | null = null;
+
+export function getRedisClient(): Redis {
+  if (!redisClient) {
+    redisClient = new Redis(REDIS_URL);
+  }
+  return redisClient;
+}
+
+export * from "./queue.ts";
+export * from "./pubsub.ts";
+```
+
+---
+
 ## Testing
 
 ### Test API with curl
@@ -313,15 +460,35 @@ websocat ws://localhost:3000/ws
 # Type: {"type":"SUBSCRIBE","tenantId":"tenant-1"}
 ```
 
+### Test Redis with CLI
+
+```bash
+# Connect to Redis CLI
+docker compose exec redis redis-cli
+
+# View queue
+LRANGE job_queue 0 -1
+
+# Queue length
+LLEN job_queue
+
+# Test pub/sub (terminal 1)
+SUBSCRIBE job_updates
+
+# Test pub/sub (terminal 2)
+PUBLISH job_updates '{"tenantId":"t1","jobId":"j1","status":"COMPLETED"}'
+```
+
 ---
 
 ## Quick Reference Commands
 
 | Command | Purpose |
 |---------|---------|
-| `docker compose up -d` | Start PostgreSQL |
-| `docker compose down` | Stop PostgreSQL |
+| `docker compose up -d` | Start PostgreSQL + Redis |
+| `docker compose down` | Stop all |
 | `docker compose down -v` | Stop + delete data |
+| `docker compose exec redis redis-cli` | Redis CLI |
 | `bunx prisma generate` | Regenerate Prisma client |
 | `bunx prisma migrate dev` | Create/apply migrations |
 | `bunx prisma studio` | Open database GUI |
@@ -342,13 +509,18 @@ async-backend/
 │   │   ├── prisma/
 │   │   │   └── schema.prisma # Database schema
 │   │   └── .env              # DATABASE_URL
+│   ├── redis/
+│   │   ├── index.ts          # Redis client factory
+│   │   ├── queue.ts          # Push/pop operations
+│   │   └── pubsub.ts         # Publish/subscribe
 │   └── types/
 │       ├── enums.ts          # JobStatus, JobType
 │       └── schemas.ts        # Zod validation
-├── docker-compose.yml        # PostgreSQL container
+├── docker-compose.yml        # PostgreSQL + Redis
 └── docs/
     ├── prisma.md
     ├── docker.md
+    ├── redis.md
     ├── websocket.md
     └── api-test.md
 ```
