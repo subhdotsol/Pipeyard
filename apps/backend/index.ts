@@ -1,5 +1,6 @@
 // Example: Using @repo/db in your backend
-import { prisma, Job, JobStatus } from "@repo/db";
+import { prisma, JobStatus } from "@repo/db";
+import type { Job } from "@repo/db";
 
 // Create a new job
 async function createJob() {

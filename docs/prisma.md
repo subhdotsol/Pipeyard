@@ -3,7 +3,14 @@
 ## Setup
 
 ```bash
+# Core Prisma dependencies
 bun add prisma @prisma/client
+
+# Prisma 7 requires a database adapter
+bun add @prisma/adapter-pg pg
+bun add -d @types/pg
+
+# Initialize Prisma
 bunx prisma init
 ```
 
@@ -265,24 +272,39 @@ enum JobStatus {
 
 ---
 
-### index.ts (Singleton Pattern)
+### index.ts (Singleton Pattern with Adapter)
+
+> [!IMPORTANT]
+> Prisma 7 requires a database adapter. You must use `@prisma/adapter-pg` for PostgreSQL.
 
 ```ts
-import { PrismaClient } from "./generated/prisma";
+import { PrismaClient } from "./generated/prisma/client.ts";
+import { PrismaPg } from "@prisma/adapter-pg";
+import pg from "pg";
+
+const { Pool } = pg;
 
 // Prevent multiple instances in development (hot reload)
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-export const prisma = globalForPrisma.prisma ?? new PrismaClient();
+// Create connection pool for PostgreSQL
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+// Create adapter (required in Prisma 7)
+const adapter = new PrismaPg(pool);
+
+export const prisma = globalForPrisma.prisma ?? new PrismaClient({ adapter });
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
 }
 
 // Re-export types for consumers
-export * from "./generated/prisma";
+export * from "./generated/prisma/client.ts";
 ```
 
 ---
@@ -308,7 +330,12 @@ export * from "./generated/prisma";
   },
   "dependencies": {
     "@prisma/client": "^7.2.0",
+    "@prisma/adapter-pg": "^7.2.0",
+    "pg": "^8.16.0",
     "prisma": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.16.0"
   }
 }
 ```
@@ -328,7 +355,8 @@ export * from "./generated/prisma";
 
 ```ts
 // apps/backend/index.ts
-import { prisma, Job, JobStatus } from "@repo/db";
+import { prisma, JobStatus } from "@repo/db";
+import type { Job } from "@repo/db";  // Use type-only import for types
 
 // Use the client
 const jobs = await prisma.job.findMany({
