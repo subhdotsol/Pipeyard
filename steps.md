@@ -577,6 +577,47 @@ await pushJob(redis, job.id);
 
 ---
 
+## Phase 6: WebSocket Pub/Sub Bridge
+
+### 6.1 Subscribe to Redis in API
+
+**In `apps/backend/index.ts`:**
+```ts
+import { getRedisClient, pushJob, subscribeToJobUpdates } from "@repo/redis";
+
+const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+
+// Subscribe to Redis Pub/Sub for job updates from worker
+const unsubscribe = subscribeToJobUpdates(REDIS_URL, (message) => {
+  console.log(`[Redis] Job update: ${message.jobId} → ${message.status}`);
+  broadcastJobUpdate(message.tenantId, message.jobId, message.status, message.error ?? null);
+});
+
+// Graceful shutdown
+process.on("SIGINT", () => {
+  console.log("\n[Server] Shutting down...");
+  unsubscribe();
+  prisma.$disconnect();
+  process.exit(0);
+});
+```
+
+### 6.2 Complete Flow
+
+```
+1. Client creates job     → POST /jobs
+2. API saves to database  → PostgreSQL
+3. API pushes to queue    → Redis LIST (LPUSH)
+4. Worker pops job        → Redis LIST (BRPOP)
+5. Worker processes job   → Run job handler
+6. Worker updates DB      → PostgreSQL (status update)
+7. Worker publishes       → Redis Pub/Sub (PUBLISH)
+8. API receives           → Redis Pub/Sub (SUBSCRIBE)
+9. API broadcasts         → WebSocket to client
+```
+
+---
+
 ## Testing
 
 ### Test API with curl

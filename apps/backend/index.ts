@@ -226,8 +226,24 @@ app.get("/health", async (_req, res) => {
 // ================================
 
 const PORT = process.env.PORT || 3000;
+const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+
+// Subscribe to Redis Pub/Sub for job updates from worker
+const unsubscribe = subscribeToJobUpdates(REDIS_URL, (message) => {
+  console.log(`[Redis] Job update: ${message.jobId} → ${message.status}`);
+  broadcastJobUpdate(message.tenantId, message.jobId, message.status, message.error ?? null);
+});
+
+// Graceful shutdown
+process.on("SIGINT", () => {
+  console.log("\n[Server] Shutting down...");
+  unsubscribe();
+  prisma.$disconnect();
+  process.exit(0);
+});
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📡 WebSocket available at ws://localhost:${PORT}/ws`);
+  console.log(`🔔 Subscribed to Redis job updates`);
 });
