@@ -7,6 +7,7 @@ import cors from "cors";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { prisma, Prisma } from "@repo/db";
+import { getRedisClient, pushJob, subscribeToJobUpdates } from "@repo/redis";
 import {
   CreateJobSchema,
   ListJobsQuerySchema,
@@ -23,6 +24,9 @@ import {
 
 const app = express();
 app.use(cors());
+
+// Redis client for queue operations
+const redis = getRedisClient();
 app.use(express.json());
 
 const httpServer = createServer(app);
@@ -150,8 +154,9 @@ app.post("/jobs", async (req, res) => {
       },
     });
 
-    // TODO: Push to Redis queue here
-    // await redis.lpush("job_queue", job.id);
+    // Push to Redis queue for worker to process
+    await pushJob(redis, job.id);
+    console.log(`[API] Job ${job.id} pushed to queue`);
 
     res.status(201).json({ jobId: job.id });
   } catch (error) {

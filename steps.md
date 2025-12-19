@@ -435,6 +435,148 @@ export * from "./pubsub.ts";
 
 ---
 
+## Phase 5: Worker
+
+### 5.1 Create Worker App
+
+```bash
+mkdir -p apps/worker
+cd apps/worker
+bun init -y
+```
+
+**Create `package.json`:**
+```json
+{
+  "name": "worker",
+  "module": "index.ts",
+  "scripts": { "start": "bun run index.ts" },
+  "dependencies": {
+    "@repo/db": "*",
+    "@repo/redis": "*",
+    "@repo/types": "*"
+  }
+}
+```
+
+### 5.2 Job Processors (processor.ts)
+
+```ts
+export interface ProcessResult {
+  success: boolean;
+  error?: string;
+}
+
+async function processEmailJob(payload: Record<string, unknown>): Promise<ProcessResult> {
+  const { to, subject } = payload as { to: string; subject: string };
+  console.log(`[Email] Sending to: ${to}, Subject: ${subject}`);
+  await sleep(500);  // Simulate sending
+  return { success: true };
+}
+
+async function processWebhookJob(payload: Record<string, unknown>): Promise<ProcessResult> {
+  const { url, method } = payload as { url: string; method: string };
+  const response = await fetch(url, { method });
+  return { success: response.ok };
+}
+
+async function processSleepJob(payload: Record<string, unknown>): Promise<ProcessResult> {
+  const { delayMs } = payload as { delayMs: number };
+  await sleep(delayMs);
+  return { success: true };
+}
+
+export async function processJob(type: string, payload: Record<string, unknown>): Promise<ProcessResult> {
+  switch (type) {
+    case "email": return processEmailJob(payload);
+    case "webhook": return processWebhookJob(payload);
+    case "sleep": return processSleepJob(payload);
+    default: throw new Error(`Unknown job type: ${type}`);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+```
+
+### 5.3 Main Worker Loop (index.ts)
+
+```ts
+import { prisma } from "@repo/db";
+import { getRedisClient, popJob, publishJobUpdate } from "@repo/redis";
+import { processJob } from "./processor.ts";
+
+const MAX_ATTEMPTS = 3;
+const redis = getRedisClient();
+
+async function processJobWithLifecycle(jobId: string): Promise<void> {
+  const job = await prisma.job.findUnique({ where: { id: jobId } });
+  if (!job || job.status === "COMPLETED") return;
+
+  // Check max attempts
+  if (job.attempts >= MAX_ATTEMPTS) {
+    await markJobFailed(jobId, job.tenantId, "Max retry attempts exceeded");
+    return;
+  }
+
+  // Mark RUNNING
+  await prisma.job.update({
+    where: { id: jobId },
+    data: { status: "RUNNING", attempts: { increment: 1 } },
+  });
+  await publishJobUpdate(redis, { tenantId: job.tenantId, jobId, status: "RUNNING" });
+
+  try {
+    const result = await processJob(job.type, job.payload as Record<string, unknown>);
+    
+    if (result.success) {
+      await prisma.job.update({ where: { id: jobId }, data: { status: "COMPLETED" } });
+      await publishJobUpdate(redis, { tenantId: job.tenantId, jobId, status: "COMPLETED" });
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
+    
+    if (job.attempts + 1 >= MAX_ATTEMPTS) {
+      await markJobFailed(jobId, job.tenantId, errorMsg);
+    } else {
+      await prisma.job.update({ where: { id: jobId }, data: { status: "PENDING", error: errorMsg } });
+      await redis.lpush("job_queue", jobId);  // Requeue for retry
+    }
+  }
+}
+
+async function markJobFailed(jobId: string, tenantId: string, error: string) {
+  await prisma.job.update({ where: { id: jobId }, data: { status: "FAILED", error } });
+  await publishJobUpdate(redis, { tenantId, jobId, status: "FAILED", error });
+}
+
+// Main loop
+async function runWorker() {
+  console.log("🔧 Worker started");
+  while (true) {
+    const jobId = await popJob(redis, 5);
+    if (jobId) await processJobWithLifecycle(jobId);
+  }
+}
+
+runWorker();
+```
+
+### 5.4 Update Backend to Push Queue
+
+**In `apps/backend/index.ts`:**
+```ts
+import { getRedisClient, pushJob } from "@repo/redis";
+
+const redis = getRedisClient();
+
+// In POST /jobs handler, after creating job:
+await pushJob(redis, job.id);
+```
+
+---
+
 ## Testing
 
 ### Test API with curl
