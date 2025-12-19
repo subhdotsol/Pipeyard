@@ -1,135 +1,277 @@
-# Turborepo starter
+# Real-Time Multi-Tenant Job Queue + Dashboard
 
-This Turborepo starter is maintained by the Turborepo core team.
+A small but realistic background job processing system built with TypeScript.
+Users can submit jobs, workers process them asynchronously **in batches**, and job
+status updates are streamed live to the frontend using WebSockets.
 
-## Using this example
+This project focuses on **infrastructure fundamentals**, not UI polish.
 
-Run the following command:
+---
 
-```sh
-npx create-turbo@latest
-```
+## 🧠 What This Project Is
 
-## What's inside?
+In simple terms:
 
-This Turborepo includes the following packages/apps:
+> Users create jobs → jobs are queued → workers process them in batches →
+> users see live status updates.
 
-### Apps and Packages
+This mimics how real systems handle:
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+* email sending
+* webhook delivery
+* async data processing
+* background workflows
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+---
 
-### Utilities
+## 🧩 Tech Stack
 
-This Turborepo has some additional tools already setup for you:
+* **Monorepo**: Turborepo
+* **Backend API**: Bun
+* **Worker**: Bun
+* **Database**: Postgres + Prisma
+* **Queue / PubSub**: Redis
+* **Realtime**: WebSockets
+* **Validation**: Zod
+* **Frontend**: Next.js (minimal dashboard)
+* **Infra**: Docker Compose + NGINX load balancer
 
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
+---
 
-### Build
-
-To build all apps and packages, run the following command:
-
-```
-cd my-turborepo
-
-# With [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation) installed (recommended)
-turbo build
-
-# Without [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation), use your package manager
-npx turbo build
-yarn dlx turbo build
-pnpm exec turbo build
-```
-
-You can build a specific package by using a [filter](https://turborepo.com/docs/crafting-your-repository/running-tasks#using-filters):
+## 🏗️ Architecture Overview
 
 ```
-# With [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation) installed (recommended)
-turbo build --filter=docs
-
-# Without [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation), use your package manager
-npx turbo build --filter=docs
-yarn exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
+Browser
+  ↓
+NGINX (Load Balancer)
+  ↓
+API (Bun)
+  ↓               ↘
+Postgres         Redis Queue
+                      ↓
+                Worker (Batch Processor)
+                      ↓
+               Redis Pub/Sub
+                      ↓
+                 API (WS)
+                      ↓
+                  Browser
 ```
 
-### Develop
+---
 
-To develop all apps and packages, run the following command:
+## 🔁 Job Lifecycle
 
-```
-cd my-turborepo
+1. Client sends a **Create Job** request
+2. API validates input using Zod
+3. Job is saved in Postgres with `PENDING` status
+4. Job ID is pushed to Redis queue
+5. Worker pulls jobs **in batches**
+6. Worker marks jobs as `RUNNING`
+7. Worker processes jobs
+8. Worker marks jobs `COMPLETED` or `FAILED`
+9. Status updates are published via Redis Pub/Sub
+10. API streams updates to connected WebSocket clients
 
-# With [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation) installed (recommended)
-turbo dev
+---
 
-# Without [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation), use your package manager
-npx turbo dev
-yarn exec turbo dev
-pnpm exec turbo dev
-```
+## 🧱 Database Schema
 
-You can develop a specific package by using a [filter](https://turborepo.com/docs/crafting-your-repository/running-tasks#using-filters):
+```prisma
+model Job {
+  id        String   @id @default(uuid())
+  tenantId  String
+  type      String
+  payload   Json
+  status    JobStatus
+  attempts  Int      @default(0)
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
 
-```
-# With [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation) installed (recommended)
-turbo dev --filter=web
-
-# Without [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation), use your package manager
-npx turbo dev --filter=web
-yarn exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.com/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-```
-cd my-turborepo
-
-# With [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation) installed (recommended)
-turbo login
-
-# Without [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation), use your package manager
-npx turbo login
-yarn exec turbo login
-pnpm exec turbo login
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
 ```
 
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
+---
 
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
+## 🌐 API Routes
+
+### Create Job
 
 ```
-# With [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation) installed (recommended)
-turbo link
-
-# Without [global `turbo`](https://turborepo.com/docs/getting-started/installation#global-installation), use your package manager
-npx turbo link
-yarn exec turbo link
-pnpm exec turbo link
+POST /jobs
 ```
 
-## Useful Links
+**Body**
 
-Learn more about the power of Turborepo:
+```json
+{
+  "tenantId": "tenant-1",
+  "type": "sleep",
+  "payload": {
+    "delayMs": 3000
+  }
+}
+```
 
-- [Tasks](https://turborepo.com/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.com/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.com/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.com/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.com/docs/reference/configuration)
-- [CLI Usage](https://turborepo.com/docs/reference/command-line-reference)
+**Response**
+
+```json
+{
+  "jobId": "uuid"
+}
+```
+
+---
+
+### List Jobs
+
+```
+GET /jobs?tenantId=tenant-1
+```
+
+---
+
+### Health Check
+
+```
+GET /health
+```
+
+Used by Docker / load balancer.
+
+---
+
+## 📡 WebSocket API
+
+### Connect
+
+```
+GET /ws
+```
+
+### Client → Server
+
+```json
+{
+  "type": "SUBSCRIBE",
+  "tenantId": "tenant-1"
+}
+```
+
+### Server → Client
+
+```json
+{
+  "jobId": "uuid",
+  "status": "COMPLETED"
+}
+```
+
+---
+
+## 🧠 Redis Design
+
+### Queue (Batching Enabled)
+
+* **Key**: `job_queue`
+* **Type**: LIST
+
+Workers pull up to `BATCH_SIZE` jobs per loop.
+
+---
+
+### Pub/Sub
+
+* **Channel**: `job_updates`
+
+Used to broadcast job status changes to WebSocket clients.
+
+---
+
+## ⚙️ Worker Batching
+
+Workers consume jobs in **small batches** to simulate real production systems.
+
+Example flow:
+
+```
+pull up to 5 jobs
+mark all RUNNING
+process jobs
+publish updates
+```
+
+Batching improves throughput and reduces Redis overhead.
+
+---
+
+## 🐳 Running Without AWS (Local-First Setup)
+
+This project **does NOT require AWS or any cloud provider**.
+
+All infrastructure is simulated locally using **Docker Compose**, which replaces:
+
+* EC2 → Docker containers
+* RDS → Postgres container
+* ElastiCache → Redis container
+* ALB → NGINX
+
+### Start Everything Locally
+
+```bash
+docker compose up --build
+```
+
+### Simulate Scaling
+
+```bash
+docker compose up --scale api=2 --scale worker=3
+```
+
+This allows you to test:
+
+* load balancing
+* multiple workers
+* concurrent job processing
+
+The architecture is **cloud-agnostic** and can later be deployed anywhere.
+
+---
+
+## 🎯 Learning Goals
+
+* Background job queues
+* Batched worker processing
+* Redis pub/sub
+* WebSocket fan-out
+* Monorepo architecture
+* Containerized local infra
+* Load-balanced APIs
+
+---
+
+## 🚫 Out of Scope (Intentionally)
+
+* Authentication
+* Billing
+* Cron scheduling
+* Exactly-once guarantees
+* UI polish
+
+This project focuses on **core system design**, not SaaS features.
+
+---
+
+## 📌 Why This Project Exists
+
+This repository demonstrates how real-world async systems work using simple,
+understandable building blocks.
+
+Small scope. Real concepts.
